@@ -4,6 +4,31 @@ import Anthropic from "@anthropic-ai/sdk";
 
 export const maxDuration = 300;
 
+async function callWithRetry(
+  anthropic: Anthropic,
+  params: { model: string; max_tokens: number; system: string; messages: { role: "user"; content: string }[] },
+  maxRetries = 5
+) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await anthropic.messages.create(params);
+    } catch (err) {
+      const isRateLimit =
+        err instanceof Anthropic.RateLimitError ||
+        (err instanceof Error && err.message.includes("rate_limit"));
+
+      if (isRateLimit && attempt < maxRetries) {
+        // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+        const delay = Math.pow(2, attempt + 1) * 1000;
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("Max retries exceeded");
+}
+
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -105,9 +130,10 @@ export async function POST(
   const profileMap = new Map(profiles.map((p) => [p.id, p]));
   const questionMap = new Map(questions.map((q) => [q.id, q]));
 
-  // Process with concurrency control using p-limit
+  // Cap concurrency to avoid rate limits (max 5 for safety)
   const pLimit = (await import("p-limit")).default;
-  const limit = pLimit(session.concurrency);
+  const concurrency = Math.min(session.concurrency, 5);
+  const limit = pLimit(concurrency);
 
   const tasks = pendingResponses.map((response) =>
     limit(async () => {
@@ -122,7 +148,7 @@ export async function POST(
         .eq("id", response.id);
 
       try {
-        const msg = await anthropic.messages.create({
+        const msg = await callWithRetry(anthropic, {
           model: session.model,
           max_tokens: 1024,
           system: profile.system_prompt,
@@ -173,6 +199,6 @@ export async function POST(
   });
 
   return NextResponse.json({
-    message: `Execucao iniciada: ${pendingResponses.length} respostas a processar`,
+    message: `Execucao iniciada: ${pendingResponses.length} respostas a processar (concorrencia: ${concurrency})`,
   });
 }
