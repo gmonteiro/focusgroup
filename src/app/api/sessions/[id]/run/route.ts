@@ -4,7 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 
 export const maxDuration = 60;
 
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 5;
 
 async function callWithRetry(
   anthropic: Anthropic,
@@ -138,7 +138,7 @@ export async function POST(
 
   // Process batch with concurrency
   const pLimit = (await import("p-limit")).default;
-  const limit = pLimit(3);
+  const limit = pLimit(2);
 
   let processed = 0;
 

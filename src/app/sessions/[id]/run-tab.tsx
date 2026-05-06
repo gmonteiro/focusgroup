@@ -57,8 +57,13 @@ export default function RunTab({
   const abortRef = useRef(false);
 
   useEffect(() => {
-    loadStats();
     loadCaches();
+    loadStats().then((s) => {
+      // Auto-resume if there are pending or stuck running responses
+      if (s && (s.pending > 0 || s.running > 0) && s.total > 0) {
+        resumeRun();
+      }
+    });
     return () => { abortRef.current = true; };
   }, [session.id]);
 
@@ -75,9 +80,9 @@ export default function RunTab({
     }
   }
 
-  async function loadStats() {
+  async function loadStats(): Promise<ResponseStats | null> {
     const { data } = await supabase.from("responses").select("status, input_tokens, output_tokens").eq("session_id", session.id);
-    if (!data) return;
+    if (!data) return null;
     const s: ResponseStats = {
       total: data.length,
       completed: data.filter((r) => r.status === "completed").length,
@@ -92,6 +97,7 @@ export default function RunTab({
     // Load activity feed
     await loadActivity();
 
+    return s;
   }
 
   async function loadActivity() {
@@ -170,6 +176,69 @@ export default function RunTab({
     }
   }
 
+  async function processBatchLoop() {
+    let batchNum = 0;
+    while (!abortRef.current) {
+      batchNum++;
+      setBatchInfo(`Processando lote ${batchNum}...`);
+
+      let retries = 0;
+      let success = false;
+
+      while (retries < 3 && !success && !abortRef.current) {
+        try {
+          const res = await fetch(`/api/sessions/${session.id}/run`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode: "batch" }),
+          });
+
+          if (!res.ok) {
+            retries++;
+            if (retries < 3) {
+              setBatchInfo(`Lote ${batchNum}: erro, tentando novamente (${retries}/3)...`);
+              await new Promise((r) => setTimeout(r, 3000));
+              continue;
+            }
+            toast.error("Erro ao processar lote apos 3 tentativas");
+            break;
+          }
+
+          const data = await res.json();
+          success = true;
+
+          // Refresh stats and activity after each batch
+          await loadStats();
+          await loadActivity();
+
+          if (data.done) {
+            setBatchInfo("Concluido!");
+            toast.success("Execucao concluida");
+            return; // exit the outer while
+          }
+
+          setBatchInfo(`Lote ${batchNum}: +${data.processed} concluidos, ${data.remaining} restantes`);
+        } catch {
+          retries++;
+          if (retries < 3) {
+            setBatchInfo(`Lote ${batchNum}: falha de rede, tentando novamente (${retries}/3)...`);
+            await new Promise((r) => setTimeout(r, 3000));
+          } else {
+            toast.error("Falha de rede apos 3 tentativas");
+          }
+        }
+      }
+
+      if (!success) break;
+    }
+
+    setRunning(false);
+    setBatchInfo("");
+    onStatusChange();
+    await loadStats();
+    await loadActivity();
+  }
+
   async function startRun() {
     setRunning(true);
     setErrors([]);
@@ -202,48 +271,29 @@ export default function RunTab({
       return;
     }
 
-    // Step 2: Process batches in a loop
-    let batchNum = 0;
-    while (!abortRef.current) {
-      batchNum++;
-      setBatchInfo(`Processando lote ${batchNum}...`);
+    // Step 2: Process batches
+    await processBatchLoop();
+  }
 
-      try {
-        const res = await fetch(`/api/sessions/${session.id}/run`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mode: "batch" }),
-        });
+  async function resumeRun() {
+    if (running) return;
+    setRunning(true);
+    abortRef.current = false;
 
-        if (!res.ok) {
-          toast.error("Erro ao processar lote");
-          break;
-        }
-
-        const data = await res.json();
-
-        // Refresh stats and activity after each batch
-        await loadStats();
-        await loadActivity();
-
-        if (data.done) {
-          setBatchInfo("Concluido!");
-          toast.success("Execucao concluida");
-          break;
-        }
-
-        setBatchInfo(`Lote ${batchNum} concluido (${data.processed} processados, ${data.remaining} restantes)`);
-      } catch {
-        toast.error("Erro de rede no lote " + batchNum);
-        break;
-      }
+    // Reset stuck "running" responses to pending
+    setBatchInfo("Retomando execucao...");
+    try {
+      await fetch(`/api/sessions/${session.id}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "init" }),
+      });
+      toast.info("Execucao retomada automaticamente");
+    } catch {
+      // Continue anyway
     }
 
-    setRunning(false);
-    setBatchInfo("");
-    onStatusChange();
-    await loadStats();
-    await loadActivity();
+    await processBatchLoop();
   }
 
   const progress = stats.total > 0 ? Math.round(((stats.completed + stats.error) / stats.total) * 100) : 0;
