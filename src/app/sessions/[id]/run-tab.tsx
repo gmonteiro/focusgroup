@@ -49,17 +49,17 @@ export default function RunTab({
   const [running, setRunning] = useState(false);
   const [errors, setErrors] = useState<{ name: string; error: string }[]>([]);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [batchInfo, setBatchInfo] = useState<string>("");
   const activityRef = useRef<HTMLDivElement>(null);
   const profileCacheRef = useRef<Map<string, { name: string; role: string; industry: string }>>(new Map());
   const questionCacheRef = useRef<Map<string, string>>(new Map());
   const seenCompletedRef = useRef<Set<string>>(new Set());
+  const abortRef = useRef(false);
 
   useEffect(() => {
     loadStats();
     loadCaches();
-    if (session.status === "running") { setRunning(true); startPolling(); }
-    return () => stopPolling();
+    return () => { abortRef.current = true; };
   }, [session.id]);
 
   async function loadCaches() {
@@ -92,7 +92,6 @@ export default function RunTab({
     // Load activity feed
     await loadActivity();
 
-    if (running && s.pending === 0 && s.running === 0) { setRunning(false); stopPolling(); onStatusChange(); }
   }
 
   async function loadActivity() {
@@ -171,21 +170,80 @@ export default function RunTab({
     }
   }
 
-  function startPolling() { pollingRef.current = setInterval(() => loadStats(), 2000); }
-  function stopPolling() { if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; } }
-
   async function startRun() {
     setRunning(true);
     setErrors([]);
     setActivity([]);
     seenCompletedRef.current.clear();
+    abortRef.current = false;
+
+    // Step 1: Initialize — create response records, reset stuck ones
     try {
-      const res = await fetch(`/api/sessions/${session.id}/run`, { method: "POST" });
-      if (!res.ok) { const body = await res.json(); toast.error(body.error || "Erro ao iniciar execucao"); setRunning(false); return; }
-      toast.success("Execucao iniciada");
-      startPolling();
+      setBatchInfo("Inicializando...");
+      const initRes = await fetch(`/api/sessions/${session.id}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "init" }),
+      });
+      if (!initRes.ok) {
+        const body = await initRes.json();
+        toast.error(body.error || "Erro ao iniciar");
+        setRunning(false);
+        setBatchInfo("");
+        return;
+      }
+      const initData = await initRes.json();
+      toast.success(`Execucao iniciada: ${initData.pending} respostas`);
       onStatusChange();
-    } catch { toast.error("Erro de rede"); setRunning(false); }
+    } catch {
+      toast.error("Erro de rede");
+      setRunning(false);
+      setBatchInfo("");
+      return;
+    }
+
+    // Step 2: Process batches in a loop
+    let batchNum = 0;
+    while (!abortRef.current) {
+      batchNum++;
+      setBatchInfo(`Processando lote ${batchNum}...`);
+
+      try {
+        const res = await fetch(`/api/sessions/${session.id}/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "batch" }),
+        });
+
+        if (!res.ok) {
+          toast.error("Erro ao processar lote");
+          break;
+        }
+
+        const data = await res.json();
+
+        // Refresh stats and activity after each batch
+        await loadStats();
+        await loadActivity();
+
+        if (data.done) {
+          setBatchInfo("Concluido!");
+          toast.success("Execucao concluida");
+          break;
+        }
+
+        setBatchInfo(`Lote ${batchNum} concluido (${data.processed} processados, ${data.remaining} restantes)`);
+      } catch {
+        toast.error("Erro de rede no lote " + batchNum);
+        break;
+      }
+    }
+
+    setRunning(false);
+    setBatchInfo("");
+    onStatusChange();
+    await loadStats();
+    await loadActivity();
   }
 
   const progress = stats.total > 0 ? Math.round(((stats.completed + stats.error) / stats.total) * 100) : 0;
@@ -261,6 +319,14 @@ export default function RunTab({
                 <span>Input: <strong className="text-foreground">{stats.total_input_tokens.toLocaleString()}</strong> tokens</span>
                 <span>Output: <strong className="text-foreground">{stats.total_output_tokens.toLocaleString()}</strong> tokens</span>
               </div>
+
+              {/* Batch status */}
+              {batchInfo && (
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-primary/5 border border-primary/10 text-sm">
+                  <svg className="animate-spin h-4 w-4 text-primary shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                  <span className="text-primary font-medium">{batchInfo}</span>
+                </div>
+              )}
 
               {/* Actions */}
               {!running && stats.error > 0 && (
