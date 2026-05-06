@@ -1,65 +1,140 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabase-browser";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import Link from "next/link";
+import { format } from "date-fns";
+
+type Session = {
+  id: string;
+  name: string;
+  description: string | null;
+  model: string;
+  status: string;
+  created_at: string;
+  profile_count?: number;
+  question_count?: number;
+};
+
+const statusColors: Record<string, string> = {
+  draft: "bg-muted text-muted-foreground",
+  running: "bg-yellow-100 text-yellow-800",
+  completed: "bg-green-100 text-green-800",
+};
+
+const statusLabels: Record<string, string> = {
+  draft: "Rascunho",
+  running: "Executando",
+  completed: "Concluido",
+};
+
+export default function HomePage() {
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadSessions();
+  }, []);
+
+  async function loadSessions() {
+    const { data } = await supabase
+      .from("sessions")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (data) {
+      const enriched = await Promise.all(
+        data.map(async (s) => {
+          const [profiles, questions] = await Promise.all([
+            supabase
+              .from("agent_profiles")
+              .select("id", { count: "exact", head: true })
+              .eq("session_id", s.id),
+            supabase
+              .from("questions")
+              .select("id", { count: "exact", head: true })
+              .eq("session_id", s.id),
+          ]);
+          return {
+            ...s,
+            profile_count: profiles.count ?? 0,
+            question_count: questions.count ?? 0,
+          };
+        })
+      );
+      setSessions(enriched);
+    }
+    setLoading(false);
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold">Sessoes de Focus Group</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Crie e gerencie focus groups virtuais com agentes AI
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+        <Link href="/sessions/new">
+          <Button>Nova Sessao</Button>
+        </Link>
+      </div>
+
+      {loading ? (
+        <p className="text-muted-foreground">Carregando...</p>
+      ) : sessions.length === 0 ? (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <p className="text-muted-foreground mb-4">
+              Nenhuma sessao criada ainda
+            </p>
+            <Link href="/sessions/new">
+              <Button>Criar primeira sessao</Button>
+            </Link>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {sessions.map((session) => (
+            <Link key={session.id} href={`/sessions/${session.id}`}>
+              <Card className="hover:shadow-md transition-shadow cursor-pointer">
+                <CardHeader className="pb-2">
+                  <div className="flex items-start justify-between">
+                    <CardTitle className="text-base">{session.name}</CardTitle>
+                    <Badge className={statusColors[session.status]}>
+                      {statusLabels[session.status] || session.status}
+                    </Badge>
+                  </div>
+                  {session.description && (
+                    <CardDescription className="line-clamp-2">
+                      {session.description}
+                    </CardDescription>
+                  )}
+                </CardHeader>
+                <CardContent>
+                  <div className="flex gap-4 text-sm text-muted-foreground">
+                    <span>{session.profile_count} perfis</span>
+                    <span>{session.question_count} perguntas</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    {format(new Date(session.created_at), "dd/MM/yyyy HH:mm")}
+                  </p>
+                </CardContent>
+              </Card>
+            </Link>
+          ))}
         </div>
-      </main>
+      )}
     </div>
   );
 }
