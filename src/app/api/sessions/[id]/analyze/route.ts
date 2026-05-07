@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase-server";
 import Anthropic from "@anthropic-ai/sdk";
 
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 export async function POST(
   req: NextRequest,
@@ -26,20 +26,26 @@ export async function POST(
     return NextResponse.json({ error: "Sessao nao encontrada" }, { status: 404 });
   }
 
-  // Load questions
-  const questionsQuery = supabase
-    .from("questions")
-    .select("*")
-    .eq("session_id", sessionId)
-    .order("sort_order");
+  if (!questionId) {
+    // Return list of question IDs to process (frontend will loop)
+    const { data: questions } = await supabase
+      .from("questions")
+      .select("id, text, sort_order")
+      .eq("session_id", sessionId)
+      .order("sort_order");
 
-  if (questionId) {
-    questionsQuery.eq("id", questionId);
+    return NextResponse.json({ questions: questions || [] });
   }
 
-  const { data: questions } = await questionsQuery;
-  if (!questions?.length) {
-    return NextResponse.json({ error: "Nenhuma pergunta encontrada" }, { status: 400 });
+  // Process a single question
+  const { data: question } = await supabase
+    .from("questions")
+    .select("*")
+    .eq("id", questionId)
+    .single();
+
+  if (!question) {
+    return NextResponse.json({ error: "Pergunta nao encontrada" }, { status: 404 });
   }
 
   // Load profiles
@@ -50,37 +56,49 @@ export async function POST(
 
   const profileMap = new Map(profiles?.map((p) => [p.id, p]) || []);
 
-  // Process each question
-  for (const question of questions) {
-    // Load completed responses for this question
-    const { data: responses } = await supabase
-      .from("responses")
-      .select("agent_profile_id, response_text")
-      .eq("session_id", sessionId)
-      .eq("question_id", question.id)
-      .eq("status", "completed");
+  // Load completed responses for this question
+  const { data: responses } = await supabase
+    .from("responses")
+    .select("agent_profile_id, response_text")
+    .eq("session_id", sessionId)
+    .eq("question_id", questionId)
+    .eq("status", "completed");
 
-    if (!responses?.length) continue;
+  if (!responses?.length) {
+    return NextResponse.json({ message: "Sem respostas para esta pergunta", skipped: true });
+  }
 
-    // Build the responses text with profile context
-    const responsesText = responses
-      .map((r) => {
-        const profile = profileMap.get(r.agent_profile_id);
-        if (!profile) return "";
-        return `[${profile.role} | ${profile.industry} | ${profile.company_size}] ${profile.name}:\n${r.response_text}`;
-      })
-      .filter(Boolean)
-      .join("\n\n---\n\n");
+  // Build responses text — limit to avoid token overflow
+  // Take a sample if too many responses (max ~50 to stay within context)
+  const sampled = responses.length > 50
+    ? responses.sort(() => Math.random() - 0.5).slice(0, 50)
+    : responses;
 
-    // Generate insights
-    const analysisPrompt = `Voce e um analista de pesquisa qualitativa especializado em focus groups corporativos.
+  const responsesText = sampled
+    .map((r) => {
+      const profile = profileMap.get(r.agent_profile_id);
+      if (!profile) return "";
+      // Truncate individual responses to 300 chars
+      const text = r.response_text && r.response_text.length > 300
+        ? r.response_text.slice(0, 300) + "..."
+        : r.response_text;
+      return `[${profile.role} | ${profile.industry} | ${profile.company_size}] ${profile.name}:\n${text}`;
+    })
+    .filter(Boolean)
+    .join("\n\n---\n\n");
 
-Analise as ${responses.length} respostas abaixo para a pergunta:
-"${question.text}"
+  const sampleNote = responses.length > 50
+    ? `\n\nNota: Estas sao ${sampled.length} respostas amostradas de um total de ${responses.length}.`
+    : "";
+
+  const analysisPrompt = `Voce e um analista de pesquisa qualitativa especializado em focus groups corporativos.
+
+Analise as ${sampled.length} respostas abaixo para a pergunta:
+"${question.text}"${sampleNote}
 
 Cada resposta inclui o perfil do respondente: [Cargo | Industria | Porte da empresa].
 
-Gere uma analise estruturada em JSON com exatamente este formato:
+Responda APENAS com JSON valido, sem texto antes ou depois. Use exatamente este formato:
 
 {
   "summary": {
@@ -117,63 +135,61 @@ Respostas:
 
 ${responsesText}`;
 
-    try {
-      const msg = await anthropic.messages.create({
-        model: session.model,
-        max_tokens: 4096,
-        messages: [{ role: "user", content: analysisPrompt }],
+  try {
+    const msg = await anthropic.messages.create({
+      model: session.model,
+      max_tokens: 4096,
+      messages: [{ role: "user", content: analysisPrompt }],
+    });
+
+    const text = msg.content[0].type === "text" ? msg.content[0].text : "";
+
+    // Extract JSON from the response
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      await supabase.from("insights").upsert({
+        session_id: sessionId,
+        question_id: questionId,
+        insight_type: "summary",
+        content: { text },
+        model_used: session.model,
       });
-
-      const text = msg.content[0].type === "text" ? msg.content[0].text : "";
-
-      // Extract JSON from the response
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        // Save raw text as summary
-        await supabase.from("insights").insert({
-          session_id: sessionId,
-          question_id: question.id,
-          insight_type: "summary",
-          content: { text },
-          model_used: session.model,
-        });
-        continue;
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
-
-      // Delete old insights for this question
-      await supabase
-        .from("insights")
-        .delete()
-        .eq("session_id", sessionId)
-        .eq("question_id", question.id);
-
-      // Save each insight type
-      const insightsToSave = [
-        { type: "summary", content: parsed.summary },
-        { type: "themes", content: parsed.themes },
-        { type: "divergences", content: parsed.divergences },
-        { type: "chart_data", content: parsed.chart_data },
-      ].filter((i) => i.content);
-
-      for (const insight of insightsToSave) {
-        await supabase.from("insights").insert({
-          session_id: sessionId,
-          question_id: question.id,
-          insight_type: insight.type,
-          content: insight.content,
-          model_used: session.model,
-        });
-      }
-    } catch (err) {
-      console.error("Analysis error:", err);
-      return NextResponse.json(
-        { error: "Erro na analise: " + (err instanceof Error ? err.message : "desconhecido") },
-        { status: 500 }
-      );
+      return NextResponse.json({ message: "Salvo como texto (JSON nao encontrado)" });
     }
-  }
 
-  return NextResponse.json({ message: "Analise concluida" });
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    // Delete old insights for this question
+    await supabase
+      .from("insights")
+      .delete()
+      .eq("session_id", sessionId)
+      .eq("question_id", questionId);
+
+    // Save each insight type
+    const insightsToSave = [
+      { type: "summary", content: parsed.summary },
+      { type: "themes", content: parsed.themes },
+      { type: "divergences", content: parsed.divergences },
+      { type: "chart_data", content: parsed.chart_data },
+    ].filter((i) => i.content);
+
+    for (const insight of insightsToSave) {
+      await supabase.from("insights").insert({
+        session_id: sessionId,
+        question_id: questionId,
+        insight_type: insight.type,
+        content: insight.content,
+        model_used: session.model,
+      });
+    }
+
+    return NextResponse.json({ message: "Analise concluida", insights: insightsToSave.length });
+  } catch (err) {
+    console.error("Analysis error:", err);
+    return NextResponse.json(
+      { error: "Erro na analise: " + (err instanceof Error ? err.message : "desconhecido") },
+      { status: 500 }
+    );
+  }
 }

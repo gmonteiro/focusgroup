@@ -24,6 +24,7 @@ export default function InsightsTab({ session }: { session: Session }) {
   const [insights, setInsights] = useState<Insight[]>([]);
   const [selectedQuestion, setSelectedQuestion] = useState<string>("all");
   const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeProgress, setAnalyzeProgress] = useState("");
   const [exporting, setExporting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [hasNoResponses, setHasNoResponses] = useState(true);
@@ -53,16 +54,61 @@ export default function InsightsTab({ session }: { session: Session }) {
 
   async function runAnalysis() {
     setAnalyzing(true);
-    try {
-      const res = await fetch(`/api/sessions/${session.id}/analyze`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question_id: selectedQuestion === "all" ? null : selectedQuestion }),
-      });
-      if (!res.ok) { const body = await res.json(); toast.error(body.error || "Erro na analise"); setAnalyzing(false); return; }
-      toast.success("Analise concluida");
+    setAnalyzeProgress("");
+
+    if (selectedQuestion !== "all") {
+      // Single question
+      setAnalyzeProgress("Analisando pergunta...");
+      try {
+        const res = await fetch(`/api/sessions/${session.id}/analyze`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question_id: selectedQuestion }),
+        });
+        if (!res.ok) { const body = await res.json(); toast.error(body.error || "Erro na analise"); }
+        else { toast.success("Analise concluida"); }
+      } catch { toast.error("Erro de rede"); }
       await loadInsights();
+      setAnalyzing(false);
+      setAnalyzeProgress("");
+      return;
+    }
+
+    // All questions — get list first, then process one by one
+    try {
+      setAnalyzeProgress("Carregando perguntas...");
+      const listRes = await fetch(`/api/sessions/${session.id}/analyze`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question_id: null }),
+      });
+      if (!listRes.ok) { toast.error("Erro ao carregar perguntas"); setAnalyzing(false); setAnalyzeProgress(""); return; }
+      const { questions: questionList } = await listRes.json();
+
+      for (let i = 0; i < questionList.length; i++) {
+        const q = questionList[i];
+        setAnalyzeProgress(`Analisando pergunta ${i + 1}/${questionList.length}: "${q.text.slice(0, 40)}..."`);
+
+        try {
+          const res = await fetch(`/api/sessions/${session.id}/analyze`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question_id: q.id }),
+          });
+          if (!res.ok) {
+            const body = await res.json();
+            toast.error(`Erro na pergunta ${i + 1}: ${body.error || "desconhecido"}`);
+          }
+        } catch {
+          toast.error(`Erro de rede na pergunta ${i + 1}`);
+        }
+
+        // Refresh insights after each question
+        await loadInsights();
+      }
+
+      toast.success(`Analise concluida: ${questionList.length} perguntas`);
     } catch { toast.error("Erro de rede"); }
+
     setAnalyzing(false);
+    setAnalyzeProgress("");
   }
 
   async function exportData() {
@@ -134,6 +180,12 @@ export default function InsightsTab({ session }: { session: Session }) {
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
               Execute o focus group primeiro para gerar insights.
             </p>
+          )}
+          {analyzeProgress && (
+            <div className="flex items-center gap-2 mt-3 p-3 rounded-lg bg-primary/5 border border-primary/10 text-sm">
+              <svg className="animate-spin h-4 w-4 text-primary shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+              <span className="text-primary font-medium">{analyzeProgress}</span>
+            </div>
           )}
         </div>
       </div>
