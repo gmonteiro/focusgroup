@@ -26,14 +26,24 @@ export default function InsightsTab({ session }: { session: Session }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [hasNoResponses, setHasNoResponses] = useState(true);
 
   useEffect(() => {
-    Promise.all([loadQuestions(), loadInsights()]).then(() => setLoading(false));
+    Promise.all([loadQuestions(), loadInsights(), checkResponses()]).then(() => setLoading(false));
   }, []);
 
   async function loadQuestions() {
     const { data } = await supabase.from("questions").select("*").eq("session_id", session.id).order("sort_order");
     if (data) setQuestions(data);
+  }
+
+  async function checkResponses() {
+    const { count } = await supabase
+      .from("responses")
+      .select("id", { count: "exact", head: true })
+      .eq("session_id", session.id)
+      .eq("status", "completed");
+    setHasNoResponses((count ?? 0) === 0);
   }
 
   async function loadInsights() {
@@ -101,7 +111,7 @@ export default function InsightsTab({ session }: { session: Session }) {
                 </SelectContent>
               </Select>
             </div>
-            <Button onClick={runAnalysis} disabled={analyzing || session.status !== "completed"} className="gradient-bg border-0 shadow-md shadow-primary/20">
+            <Button onClick={runAnalysis} disabled={analyzing || hasNoResponses} className="gradient-bg border-0 shadow-md shadow-primary/20">
               {analyzing ? (
                 <span className="flex items-center gap-2">
                   <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
@@ -119,7 +129,7 @@ export default function InsightsTab({ session }: { session: Session }) {
               {exporting ? "Exportando..." : "Exportar"}
             </Button>
           </div>
-          {session.status !== "completed" && (
+          {hasNoResponses && (
             <p className="text-xs text-amber-600 mt-3 flex items-center gap-1.5">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
               Execute o focus group primeiro para gerar insights.
