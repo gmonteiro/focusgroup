@@ -7,13 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { toast } from "sonner";
 
 const MODELS = [
@@ -53,12 +46,61 @@ const MODELS = [
   },
 ];
 
+function ModelSelector({
+  label,
+  sublabel,
+  value,
+  onChange,
+}: {
+  label: string;
+  sublabel: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div>
+      <Label className="text-sm font-medium mb-1 block">{label}</Label>
+      <p className="text-xs text-muted-foreground mb-3">{sublabel}</p>
+      <div className="grid grid-cols-3 gap-3">
+        {MODELS.map((m) => (
+          <button
+            type="button"
+            key={m.value}
+            onClick={() => onChange(m.value)}
+            className={`relative rounded-lg border-2 p-4 text-left transition-all hover:border-primary/40 ${
+              value === m.value
+                ? "border-primary bg-primary/5 shadow-sm"
+                : "border-border hover:bg-accent/50"
+            }`}
+          >
+            <div className={`mb-2 ${value === m.value ? "text-primary" : "text-muted-foreground"}`}>
+              {m.icon}
+            </div>
+            <div className="font-medium text-sm">{m.label}</div>
+            <div className="text-xs text-muted-foreground mt-0.5">{m.desc}</div>
+            {value === m.value && (
+              <div className="absolute top-3 right-3">
+                <div className="w-5 h-5 rounded-full gradient-bg flex items-center justify-center">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                </div>
+              </div>
+            )}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function NewSessionPage() {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [model, setModel] = useState("claude-haiku-4-5-20251001");
+  const [model, setModel] = useState("claude-sonnet-4-6");
+  const [analysisModel, setAnalysisModel] = useState("claude-opus-4-6");
   const [concurrency, setConcurrency] = useState(20);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -75,6 +117,7 @@ export default function NewSessionPage() {
         name: name.trim(),
         description: description.trim() || null,
         model,
+        analysis_model: analysisModel,
         concurrency,
       })
       .select("id")
@@ -140,62 +183,45 @@ export default function NewSessionPage() {
           </div>
         </div>
 
-        <div className="rounded-xl border bg-card p-6 space-y-5">
-          <div>
-            <Label className="text-sm font-medium mb-3 block">Modelo AI</Label>
-            <div className="grid grid-cols-3 gap-3">
-              {MODELS.map((m) => (
-                <button
-                  type="button"
-                  key={m.value}
-                  onClick={() => setModel(m.value)}
-                  className={`relative rounded-lg border-2 p-4 text-left transition-all hover:border-primary/40 ${
-                    model === m.value
-                      ? "border-primary bg-primary/5 shadow-sm"
-                      : "border-border hover:bg-accent/50"
-                  }`}
-                >
-                  <div className={`mb-2 ${model === m.value ? "text-primary" : "text-muted-foreground"}`}>
-                    {m.icon}
-                  </div>
-                  <div className="font-medium text-sm">{m.label}</div>
-                  <div className="text-xs text-muted-foreground mt-0.5">{m.desc}</div>
-                  {model === m.value && (
-                    <div className="absolute top-3 right-3">
-                      <div className="w-5 h-5 rounded-full gradient-bg flex items-center justify-center">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                      </div>
-                    </div>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
+        <div className="rounded-xl border bg-card p-6 space-y-6">
+          <ModelSelector
+            label="Modelo para Respostas"
+            sublabel="Usado pelos agentes ao responder perguntas. Sonnet recomendado."
+            value={model}
+            onChange={setModel}
+          />
 
-          <div className="space-y-2">
-            <Label htmlFor="concurrency" className="text-sm font-medium">
-              Concorrencia
-            </Label>
-            <div className="flex items-center gap-3">
-              <Input
-                id="concurrency"
-                type="number"
-                min={1}
-                max={100}
-                value={concurrency}
-                onChange={(e) => setConcurrency(Number(e.target.value))}
-                className="w-24 h-11"
-              />
-              <span className="text-sm text-muted-foreground">
-                agentes simultaneos
-              </span>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Mais concorrencia = mais rapido, mas pode atingir rate limits da API.
-            </p>
+          <div className="border-t border-border/50" />
+
+          <ModelSelector
+            label="Modelo para Analise de Insights"
+            sublabel="Usado para gerar resumos, temas e analise global. Opus recomendado."
+            value={analysisModel}
+            onChange={setAnalysisModel}
+          />
+        </div>
+
+        <div className="rounded-xl border bg-card p-6 space-y-2">
+          <Label htmlFor="concurrency" className="text-sm font-medium">
+            Concorrencia
+          </Label>
+          <div className="flex items-center gap-3">
+            <Input
+              id="concurrency"
+              type="number"
+              min={1}
+              max={100}
+              value={concurrency}
+              onChange={(e) => setConcurrency(Number(e.target.value))}
+              className="w-24 h-11"
+            />
+            <span className="text-sm text-muted-foreground">
+              agentes simultaneos
+            </span>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Mais concorrencia = mais rapido, mas pode atingir rate limits da API.
+          </p>
         </div>
 
         <div className="flex gap-3 pt-2">

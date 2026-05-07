@@ -26,6 +26,9 @@ export async function POST(
     return NextResponse.json({ error: "Sessao nao encontrada" }, { status: 404 });
   }
 
+  // Use analysis_model if set, otherwise fall back to session model
+  const analysisModel: string = session.analysis_model || session.model;
+
   // === LIST MODE: return questions to process ===
   if (mode === "list" || (!questionId && mode !== "global")) {
     const { data: questions } = await supabase
@@ -100,7 +103,7 @@ ${digest}`;
 
     try {
       const msg = await anthropic.messages.create({
-        model: session.model,
+        model: analysisModel,
         max_tokens: 4096,
         messages: [{ role: "user", content: globalPrompt }],
       });
@@ -122,7 +125,7 @@ ${digest}`;
           question_id: null,
           insight_type: "global",
           content: parsed,
-          model_used: session.model,
+          model_used: analysisModel,
         });
       } else {
         await supabase.from("insights").insert({
@@ -130,7 +133,7 @@ ${digest}`;
           question_id: null,
           insight_type: "global",
           content: { executive_summary: text, key_findings: [], opportunities: [], risks: [], recommendation: "" },
-          model_used: session.model,
+          model_used: analysisModel,
         });
       }
 
@@ -233,7 +236,7 @@ ${responsesText}`;
 
   try {
     const msg = await anthropic.messages.create({
-      model: session.model,
+      model: analysisModel,
       max_tokens: 4096,
       messages: [{ role: "user", content: analysisPrompt }],
     });
@@ -247,7 +250,7 @@ ${responsesText}`;
         question_id: questionId,
         insight_type: "summary",
         content: { headline: "Analise gerada", bullets: [text.slice(0, 200)] },
-        model_used: session.model,
+        model_used: analysisModel,
       });
       return NextResponse.json({ message: "Salvo como texto" });
     }
@@ -273,7 +276,7 @@ ${responsesText}`;
         question_id: questionId,
         insight_type: insight.type,
         content: insight.content,
-        model_used: session.model,
+        model_used: analysisModel,
       });
     }
 

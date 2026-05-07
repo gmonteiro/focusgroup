@@ -17,6 +17,7 @@ type Session = {
   name: string;
   description: string | null;
   model: string;
+  analysis_model: string;
   concurrency: number;
   status: string;
   created_at: string;
@@ -153,9 +154,15 @@ export default function SessionDetailPage() {
           <div className="flex items-center gap-2 mt-3">
             <Badge variant="secondary" className="text-xs font-medium">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-1">
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
               </svg>
-              {modelLabel(session.model)}
+              Respostas: {modelLabel(session.model)}
+            </Badge>
+            <Badge variant="secondary" className="text-xs font-medium">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-1">
+                <path d="M21.21 15.89A10 10 0 1 1 8 2.83" /><path d="M22 12A10 10 0 0 0 12 2v10z" />
+              </svg>
+              Analise: {modelLabel(session.analysis_model || session.model)}
             </Badge>
             <Badge variant="secondary" className="text-xs font-medium">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-1">
