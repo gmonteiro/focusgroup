@@ -4,8 +4,6 @@ import Anthropic from "@anthropic-ai/sdk";
 
 export const maxDuration = 60;
 
-const BATCH_SIZE = 5;
-
 async function callWithRetry(
   anthropic: Anthropic,
   params: { model: string; max_tokens: number; system: string; messages: { role: "user"; content: string }[] },
@@ -110,13 +108,19 @@ export async function POST(
   }
 
   // === BATCH MODE: process next batch ===
+  // Adjust batch size and concurrency based on model speed
+  const isOpus = session.model.includes("opus");
+  const isSonnet = session.model.includes("sonnet");
+  const batchSize = isOpus ? 2 : isSonnet ? 3 : 5;
+  const concurrency = isOpus ? 1 : 2;
+
   // Get next batch of pending responses
   const { data: batch } = await supabase
     .from("responses")
     .select("id, agent_profile_id, question_id")
     .eq("session_id", sessionId)
     .in("status", ["pending", "error"])
-    .limit(BATCH_SIZE);
+    .limit(batchSize);
 
   if (!batch?.length) {
     // All done
@@ -138,7 +142,7 @@ export async function POST(
 
   // Process batch with concurrency
   const pLimit = (await import("p-limit")).default;
-  const limit = pLimit(2);
+  const limit = pLimit(concurrency);
 
   let processed = 0;
 
